@@ -99,17 +99,41 @@ def get_gtfs_feed_entities(url: str, headers, label: str):
     return feed.get('entity')
 
 def get_direction_from_static_gtfs(self, trip_id: str) -> str:
-    """Resolve direction_id from static GTFS DB when RT feed omits it."""
+    """Resolve direction_id from static GTFS DB when RT feed omits it.
+    
+    Tries several common attribute paths used by the gtfs2 integration to
+    locate the SQLite database file, so the lookup is resilient to different
+    sensor configurations.
+    """
     try:
         import sqlite3
-        db_path = self.hass.config.path(DEFAULT_PATH, self._data["file"] + ".db")
+        # Try common attribute paths for the db file name
+        db_file = None
+        for attr in ("_data", ):
+            data = getattr(self, attr, None)
+            if isinstance(data, dict):
+                db_file = data.get("file") or data.get("gtfs_file") or data.get("db_file")
+                if db_file:
+                    break
+        if not db_file:
+            # Last resort: try direct attributes
+            db_file = getattr(self, "_gtfs_file", None) or getattr(self, "_db_file", None)
+
+        if not db_file:
+            _LOGGER.debug("Static GTFS direction lookup: could not determine db file name for trip %s", trip_id)
+            return "nn"
+
+        db_path = self.hass.config.path(DEFAULT_PATH, db_file + ".db")
+        _LOGGER.debug("Static GTFS direction lookup: using db path %s for trip %s", db_path, trip_id)
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
                 "SELECT direction_id FROM trips WHERE trip_id = ?", (trip_id,)
             ).fetchone()
         if row is not None:
-            _LOGGER.debug("Static GTFS direction lookup for trip %s: found direction_id %s", trip_id, row[0])
+            _LOGGER.debug("Static GTFS direction lookup for trip %s: resolved direction_id %s", trip_id, row[0])
             return str(row[0])
+        else:
+            _LOGGER.debug("Static GTFS direction lookup: trip %s not found in DB", trip_id)
     except Exception as ex:
         _LOGGER.debug("Static GTFS direction lookup failed for trip %s: %s", trip_id, ex)
     return "nn"
@@ -226,17 +250,19 @@ def get_rt_route_trip_statuses(self):
             trip_id = entity["trip_update"]["trip"]["trip_id"]
 
             if "direction_id" in entity["trip_update"]["trip"]:
-                # direction_id was explicitly present in the protobuf feed
-                direction_id = str(entity["trip_update"]["trip"]["direction_id"])
+                # direction_id was explicitly present in the (converted) feed dict
+                direction_id = entity["trip_update"]["trip"]["direction_id"]
             else:
                 # RT feed did not set direction_id (e.g. TTC omits it).
                 # convert_gtfs_realtime_to_json now omits the key rather than
-                # writing the proto default of 0, which would incorrectly label
-                # all un-tagged trips (including eastbound) as direction 0.
-                # Resolve the real direction from the static GTFS DB instead.
+                # writing the protobuf default of 0, which would incorrectly
+                # label all un-tagged trips (including eastbound) as direction 0.
+                # First try to resolve from the static GTFS SQLite DB; if that
+                # also fails, fall back to "nn" so the existing trip_id-based
+                # matching logic below can still catch single-trip sensors.
                 direction_id = get_direction_from_static_gtfs(self, trip_id)
                 _LOGGER.debug(
-                    "RT feed missing direction_id for trip %s — resolved from static GTFS: %s",
+                    "RT feed missing direction_id for trip %s — resolved: %s",
                     trip_id, direction_id
                 )
                 
@@ -252,10 +278,19 @@ def get_rt_route_trip_statuses(self):
             entity_id = entity["id"]
             
             _LOGGER.debug("Search for entity with params - group: %s, route_id: %s, direction_id: %s, self_trip_id: %s, with rt trip: %s, rt id: %s", self._rt_group, route_id, direction_id, self._trip_id, entity["trip_update"]["trip"], entity_id)            
-                
+
+            # Determine whether this entity matches what we're looking for.
+            # When direction_id is still "nn" after the static GTFS lookup (i.e.
+            # lookup failed), treat a route_id match as sufficient for route-based
+            # sensors so that departures are not silently dropped. The direction
+            # will be set to self._direction when the stop is recorded below.
+            direction_resolved = direction_id != "nn"
+            route_match = (route_id == self._route_id or self._route_id in route_id)
+            direction_match = (str(direction_id) == str(self._direction))
+
             # first part covers start/end and thus multiple RT are possible for the same stop, also, for SIRI route_id do not match so a 'in' is used 
             # the second part covers local stops, i.e. per trip, so only one RT possible for that stop         
-            if (self._rt_group == "route" and (str(direction_id) == str(self._direction) and (route_id == self._route_id or self._route_id in route_id)) or (direction_id == "nn" and trip_id == self._trip_id) or (self._trip_id in trip_id)) or (self._rt_group == "trip" and (trip_id == self._trip_id or self._trip_id in trip_id)) or entity_id == self._trip_short_name:
+            if (self._rt_group == "route" and route_match and (direction_match or (not direction_resolved and self._rt_group == "route"))) or (direction_id == "nn" and trip_id == self._trip_id) or (self._trip_id in trip_id) or (self._rt_group == "trip" and (trip_id == self._trip_id or self._trip_id in trip_id)) or entity_id == self._trip_short_name:
                 
                 _LOGGER.debug("Entity found params - group: %s, route_id: %s, direction_id: %s, self_trip_id: %s, with rt trip: %s, rt id: %s", self._rt_group, route_id, direction_id, self._trip_id, entity["trip_update"]["trip"], entity_id)
                 
@@ -343,10 +378,7 @@ def get_rt_vehicle_positions(self):
             _LOGGER.debug('Adding position for TripId: %s, RouteId: %s, DirectionId: %s, Lat: %s, Lon: %s, crc_trip_id: %s', vehicle["trip"]["trip_id"],vehicle["trip"]["route_id"],vehicle["trip"]["direction_id"],vehicle["position"]["latitude"],vehicle["position"]["longitude"], binascii.crc32((vehicle["trip"]["trip_id"]).encode('utf8')))  
             
         # add data if in the selected direction
-        # some datasets may be missing direction
-        rt_direction = vehicle["trip"].get("direction_id")
-        _LOGGER.debug("rt_direction: %s", str(rt_direction))
-        if (str(self._route_id) == str(vehicle["trip"]["route_id"]) or str(vehicle["trip"]["trip_id"]) == str(self._trip_id)) and (rt_direction is None or str(self._direction) == str(rt_direction)):
+        if (str(self._route_id) == str(vehicle["trip"]["route_id"]) or str(vehicle["trip"]["trip_id"]) == str(self._trip_id)) and str(self._direction) == str(vehicle["trip"]["direction_id"]):
             _LOGGER.debug("Found vehicle on route with attributes: %s", vehicle)
             _LOGGER.debug("crc : %s", binascii.crc32((vehicle["trip"]["trip_id"]).encode('utf8')))
             geojson_element = {"geometry": {"coordinates":[],"type": "Point"}, "properties": {"id": "", "title": "", "trip_id": "", "route_id": "", "direction_id": "", "vehicle_id": "", "vehicle_label": ""}, "type": "Feature"}
@@ -387,9 +419,9 @@ def get_rt_alerts(self):
     for entity in feed_entities:
         if entity.HasField("alert"):
             # Extract header text safely
-            header_text = ""
-            if entity.alert.header_text.translation:
-                header_text = entity.alert.header_text.translation[0].text
+            description_text = ""
+            if entity.alert.description_text.translation:
+                description_text = entity.alert.description_text.translation[0].text
             
             for x in entity.alert.informed_entity:
                 route_match = (x.route_id == self._route_id)
@@ -399,9 +431,9 @@ def get_rt_alerts(self):
                 # If it's our route, we want the alert regardless of stop ID
                 if route_match:
                     if stop_match or not x.stop_id:
-                        rt_alerts["origin_stop_alert"] = header_text.replace('\n', ' ')
+                        rt_alerts["origin_stop_alert"] = description_text.replace('\n', ' ')
                     if dest_stop_match or not x.stop_id:
-                        rt_alerts["destination_stop_alert"] = header_text.replace('\n', ' ')
+                        rt_alerts["destination_stop_alert"] = description_text.replace('\n', ' ')
     
     return rt_alerts
     
@@ -419,7 +451,7 @@ def get_rt_alerts_json(self):
         for entity in feed_entities:
             alert = entity.get("alert")
             if alert:
-                header_text = alert.get("header_text", {}).get("translation", [{}])[0].get("text", "Alert")
+                description_text = alert.get("description_text", {}).get("translation", [{}])[0].get("text", "Alert")
                 
                 for x in alert.get("informed_entity", []):
                     route_id = x.get("route_id", "unknown")
@@ -427,9 +459,9 @@ def get_rt_alerts_json(self):
 
                     if route_id == self._route_id or route_id == "unknown":
                         if stop_id == self._stop_id or stop_id == "unknown":
-                            rt_alerts["origin_stop_alert"] = header_text.replace('\n', ' ')
+                            rt_alerts["origin_stop_alert"] = description_text.replace('\n', ' ')
                         if stop_id == self._destination_id or stop_id == "unknown":
-                            rt_alerts["destination_stop_alert"] = header_text.replace('\n', ' ')
+                            rt_alerts["destination_stop_alert"] = description_text.replace('\n', ' ')
                             
     return rt_alerts
     
@@ -541,12 +573,12 @@ def convert_gtfs_realtime_to_json(gtfs_realtime_data):
 
     for entity in feed.entity:
         # Build the trip dict without direction_id first.
-        # direction_id is optional uint32 in proto2. When a feed omits it,
-        # the protobuf library returns the default value of 0, which would
-        # incorrectly label every un-tagged trip (including eastbound ones)
-        # as direction 0.  We only write direction_id into the dict when it
-        # is explicitly present in the feed so that get_rt_route_trip_statuses
-        # can detect the omission and fall back to the static GTFS DB lookup.
+        # direction_id is optional uint32 in proto2. When a feed omits it (e.g.
+        # TTC), the protobuf library returns the default value of 0, which would
+        # silently label every un-tagged trip — including eastbound ones — as
+        # direction 0. We only write direction_id into the dict when it is
+        # explicitly set in the feed, so that get_rt_route_trip_statuses can
+        # detect the absence and fall back to the static GTFS DB lookup.
         trip_dict = {
             "trip_id": entity.trip_update.trip.trip_id,
             "start_time": entity.trip_update.trip.start_time,
@@ -556,14 +588,11 @@ def convert_gtfs_realtime_to_json(gtfs_realtime_data):
         try:
             if entity.trip_update.trip.HasField("direction_id"):
                 trip_dict["direction_id"] = str(entity.trip_update.trip.direction_id)
-                _LOGGER.debug("Trip %s has explicit direction_id: %s", entity.trip_update.trip.trip_id, trip_dict["direction_id"])
-            else:
-                _LOGGER.debug("Trip %s has no direction_id in RT feed — static GTFS lookup will be used", entity.trip_update.trip.trip_id)
+            # else: leave direction_id absent — handled in get_rt_route_trip_statuses
         except ValueError:
             # HasField not supported for this field in this protobuf build;
-            # fall back to always including it (original behaviour).
+            # fall back to original behaviour of always including it.
             trip_dict["direction_id"] = str(entity.trip_update.trip.direction_id)
-            _LOGGER.debug("HasField not supported for direction_id on trip %s, using raw value: %s", entity.trip_update.trip.trip_id, trip_dict["direction_id"])
 
         entity_dict = {
             "id": entity.id,
