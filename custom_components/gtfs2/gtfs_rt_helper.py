@@ -316,7 +316,9 @@ def get_rt_vehicle_positions(self):
             _LOGGER.debug('Adding position for TripId: %s, RouteId: %s, DirectionId: %s, Lat: %s, Lon: %s, crc_trip_id: %s', vehicle["trip"]["trip_id"],vehicle["trip"]["route_id"],vehicle["trip"]["direction_id"],vehicle["position"]["latitude"],vehicle["position"]["longitude"], binascii.crc32((vehicle["trip"]["trip_id"]).encode('utf8')))  
             
         # add data if in the selected direction
-        if (str(self._route_id) == str(vehicle["trip"]["route_id"]) or str(vehicle["trip"]["trip_id"]) == str(self._trip_id)) and str(self._direction) == str(vehicle["trip"]["direction_id"]):
+        # some datasets may be missing direction
+        rt_direction = vehicle["trip"].get("direction_id")
+        if (str(self._route_id) == str(vehicle["trip"]["route_id"]) or str(vehicle["trip"]["trip_id"]) == str(self._trip_id)) and (rt_direction is None or str(self._direction) == str(rt_direction)):
             _LOGGER.debug("Found vehicle on route with attributes: %s", vehicle)
             _LOGGER.debug("crc : %s", binascii.crc32((vehicle["trip"]["trip_id"]).encode('utf8')))
             geojson_element = {"geometry": {"coordinates":[],"type": "Point"}, "properties": {"id": "", "title": "", "trip_id": "", "route_id": "", "direction_id": "", "vehicle_id": "", "vehicle_label": ""}, "type": "Feature"}
@@ -342,34 +344,37 @@ def get_rt_vehicle_positions(self):
     
 def get_rt_alerts(self):
     rt_alerts = {}
-    if (self._alerts_url)[:4] == "http":
-        feed_entities = get_gtfs_feed_entities(
-            url=self._alerts_url,
-            headers=self._headers,
-            label="alerts",
-        )
-        for entity in feed_entities:
-            if entity.HasField("alert"):
-                for x in entity.alert.informed_entity:
-                    if x.HasField("stop_id"):
-                        stop_id = x.stop_id 
-                    else:
-                        stop_id = "unknown"
-                    if x.HasField("stop_id"):
-                        route_id = x.route_id  
-                    else:
-                        route_id = "unknown"
-                if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id): 
-                    _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.header_text)
-                    rt_alerts["origin_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id): 
-                    _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.header_text)
-                    rt_alerts["destination_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                if stop_id == "unknown" and route_id == self._route_id: 
-                    _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.header_text)
-                    rt_alerts["origin_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                    rt_alerts["destination_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
-                        
+    if not self._alerts_url or not self._alerts_url.startswith("http"):
+        return rt_alerts
+
+    feed_entities = get_gtfs_feed_entities(
+        url=self._alerts_url,
+        headers=self._headers,
+        label="alerts",
+    )
+    
+    if not feed_entities:
+        return rt_alerts
+
+    for entity in feed_entities:
+        if entity.HasField("alert"):
+            # Extract header text safely
+            header_text = ""
+            if entity.alert.header_text.translation:
+                header_text = entity.alert.header_text.translation[0].text
+            
+            for x in entity.alert.informed_entity:
+                route_match = (x.route_id == self._route_id)
+                stop_match = (x.stop_id == self._stop_id)
+                dest_stop_match = (x.stop_id == self._destination_id)
+                
+                # If it's our route, we want the alert regardless of stop ID
+                if route_match:
+                    if stop_match or not x.stop_id:
+                        rt_alerts["origin_stop_alert"] = header_text.replace('\n', ' ')
+                    if dest_stop_match or not x.stop_id:
+                        rt_alerts["destination_stop_alert"] = header_text.replace('\n', ' ')
+    
     return rt_alerts
     
 def get_rt_alerts_json(self):
@@ -380,28 +385,24 @@ def get_rt_alerts_json(self):
             headers=self._headers,
             label="alerts",
         )
+        if not feed_entities:
+            return rt_alerts
+
         for entity in feed_entities:
-            if entity["alert"]:
-                for x in entity["alert"]["informed_entity"]:
-                    if x["stop_id"]:
-                        stop_id = x["stop_id"] 
-                    else:
-                        stop_id = "unknown"
-                    if x["route_id"]:
-                        route_id = x["route_id"]  
-                    else:
-                        route_id = "unknown"
-                if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id): 
-                    _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["header_text"])
-                    rt_alerts["origin_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id): 
-                    _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["header_text"])
-                    rt_alerts["destination_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                if stop_id == "unknown" and route_id == self._route_id: 
-                    _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["header_text"])
-                    rt_alerts["origin_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                    rt_alerts["destination_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
-                        
+            alert = entity.get("alert")
+            if alert:
+                header_text = alert.get("header_text", {}).get("translation", [{}])[0].get("text", "Alert")
+                
+                for x in alert.get("informed_entity", []):
+                    route_id = x.get("route_id", "unknown")
+                    stop_id = x.get("stop_id", "unknown")
+
+                    if route_id == self._route_id or route_id == "unknown":
+                        if stop_id == self._stop_id or stop_id == "unknown":
+                            rt_alerts["origin_stop_alert"] = header_text.replace('\n', ' ')
+                        if stop_id == self._destination_id or stop_id == "unknown":
+                            rt_alerts["destination_stop_alert"] = header_text.replace('\n', ' ')
+                            
     return rt_alerts
     
     
