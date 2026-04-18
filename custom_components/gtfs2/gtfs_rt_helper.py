@@ -98,6 +98,21 @@ def get_gtfs_feed_entities(url: str, headers, label: str):
     
     return feed.get('entity')
 
+def get_direction_from_static_gtfs(self, trip_id: str) -> str:
+    """Resolve direction_id from static GTFS DB when RT feed omits it."""
+    try:
+        import sqlite3
+        db_path = self.hass.config.path(DEFAULT_PATH, self._data["file"] + ".db")
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT direction_id FROM trips WHERE trip_id = ?", (trip_id,)
+            ).fetchone()
+        if row is not None:
+            return str(row[0])
+    except Exception as ex:
+        _LOGGER.debug("Static GTFS direction lookup failed for trip %s: %s", trip_id, ex)
+    return "nn"
+
 def get_next_services(self):
     self._stop = self._stop_id
     self._destination = self._destination_id
@@ -207,10 +222,17 @@ def get_rt_route_trip_statuses(self):
             else:
                 route_id = entity["trip_update"]["trip"]["route_id"]
 
+            trip_id = entity["trip_update"]["trip"]["trip_id"]
+
             if "direction_id" in entity["trip_update"]["trip"]:
-                    direction_id = entity["trip_update"]["trip"]["direction_id"]
+                direction_id = str(entity["trip_update"]["trip"]["direction_id"])
             else:
-                direction_id = "nn"
+                # RT feed omitted direction_id (e.g. TTC); resolve from static GTFS DB
+                direction_id = get_direction_from_static_gtfs(self, trip_id)
+                _LOGGER.debug(
+                    "RT feed missing direction_id for trip %s — resolved from static GTFS: %s",
+                    trip_id, direction_id
+                )
                 
             # for route-based requests, if the rt-data has no route (ex. TER) then the selection should be on matching trip_id or matching RT-id with short_name (ex. MTA Metro North RR)
             # result will be that only one RT value will be collected
@@ -221,7 +243,6 @@ def get_rt_route_trip_statuses(self):
             if self._rt_group == "trip":
                 direction_id = self._direction   
 
-            trip_id = entity["trip_update"]["trip"]["trip_id"]
             entity_id = entity["id"]
             
             _LOGGER.debug("Search for entity with params - group: %s, route_id: %s, direction_id: %s, self_trip_id: %s, with rt trip: %s, rt id: %s", self._rt_group, route_id, direction_id, self._trip_id, entity["trip_update"]["trip"], entity_id)            
@@ -316,9 +337,8 @@ def get_rt_vehicle_positions(self):
             _LOGGER.debug('Adding position for TripId: %s, RouteId: %s, DirectionId: %s, Lat: %s, Lon: %s, crc_trip_id: %s', vehicle["trip"]["trip_id"],vehicle["trip"]["route_id"],vehicle["trip"]["direction_id"],vehicle["position"]["latitude"],vehicle["position"]["longitude"], binascii.crc32((vehicle["trip"]["trip_id"]).encode('utf8')))  
             
         # add data if in the selected direction
-        # some datasets may be missing direction
-        rt_direction = vehicle["trip"].get("direction_id")
-        if (str(self._route_id) == str(vehicle["trip"]["route_id"]) or str(vehicle["trip"]["trip_id"]) == str(self._trip_id)) and (rt_direction is None or str(self._direction) == str(rt_direction)):
+        _LOGGER.debug("rt_direction: %s", str(rt_direction))
+        if (str(self._route_id) == str(vehicle["trip"]["route_id"]) or str(vehicle["trip"]["trip_id"]) == str(self._trip_id)) and str(self._direction) == str(rt_direction):
             _LOGGER.debug("Found vehicle on route with attributes: %s", vehicle)
             _LOGGER.debug("crc : %s", binascii.crc32((vehicle["trip"]["trip_id"]).encode('utf8')))
             geojson_element = {"geometry": {"coordinates":[],"type": "Point"}, "properties": {"id": "", "title": "", "trip_id": "", "route_id": "", "direction_id": "", "vehicle_id": "", "vehicle_label": ""}, "type": "Feature"}
