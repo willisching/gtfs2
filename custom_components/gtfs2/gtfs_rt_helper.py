@@ -108,6 +108,7 @@ def get_direction_from_static_gtfs(self, trip_id: str) -> str:
                 "SELECT direction_id FROM trips WHERE trip_id = ?", (trip_id,)
             ).fetchone()
         if row is not None:
+            _LOGGER.debug("Static GTFS direction lookup for trip %s: found direction_id %s", trip_id, row[0])
             return str(row[0])
     except Exception as ex:
         _LOGGER.debug("Static GTFS direction lookup failed for trip %s: %s", trip_id, ex)
@@ -225,9 +226,14 @@ def get_rt_route_trip_statuses(self):
             trip_id = entity["trip_update"]["trip"]["trip_id"]
 
             if "direction_id" in entity["trip_update"]["trip"]:
+                # direction_id was explicitly present in the protobuf feed
                 direction_id = str(entity["trip_update"]["trip"]["direction_id"])
             else:
-                # RT feed omitted direction_id (e.g. TTC); resolve from static GTFS DB
+                # RT feed did not set direction_id (e.g. TTC omits it).
+                # convert_gtfs_realtime_to_json now omits the key rather than
+                # writing the proto default of 0, which would incorrectly label
+                # all un-tagged trips (including eastbound) as direction 0.
+                # Resolve the real direction from the static GTFS DB instead.
                 direction_id = get_direction_from_static_gtfs(self, trip_id)
                 _LOGGER.debug(
                     "RT feed missing direction_id for trip %s — resolved from static GTFS: %s",
@@ -337,7 +343,10 @@ def get_rt_vehicle_positions(self):
             _LOGGER.debug('Adding position for TripId: %s, RouteId: %s, DirectionId: %s, Lat: %s, Lon: %s, crc_trip_id: %s', vehicle["trip"]["trip_id"],vehicle["trip"]["route_id"],vehicle["trip"]["direction_id"],vehicle["position"]["latitude"],vehicle["position"]["longitude"], binascii.crc32((vehicle["trip"]["trip_id"]).encode('utf8')))  
             
         # add data if in the selected direction
-        if (str(self._route_id) == str(vehicle["trip"]["route_id"]) or str(vehicle["trip"]["trip_id"]) == str(self._trip_id)) and str(self._direction) == str(vehicle["trip"]["direction_id"]):
+        # some datasets may be missing direction
+        rt_direction = vehicle["trip"].get("direction_id")
+        _LOGGER.debug("rt_direction: %s", str(rt_direction))
+        if (str(self._route_id) == str(vehicle["trip"]["route_id"]) or str(vehicle["trip"]["trip_id"]) == str(self._trip_id)) and (rt_direction is None or str(self._direction) == str(rt_direction)):
             _LOGGER.debug("Found vehicle on route with attributes: %s", vehicle)
             _LOGGER.debug("crc : %s", binascii.crc32((vehicle["trip"]["trip_id"]).encode('utf8')))
             geojson_element = {"geometry": {"coordinates":[],"type": "Point"}, "properties": {"id": "", "title": "", "trip_id": "", "route_id": "", "direction_id": "", "vehicle_id": "", "vehicle_label": ""}, "type": "Feature"}
@@ -531,16 +540,35 @@ def convert_gtfs_realtime_to_json(gtfs_realtime_data):
     }
 
     for entity in feed.entity:
+        # Build the trip dict without direction_id first.
+        # direction_id is optional uint32 in proto2. When a feed omits it,
+        # the protobuf library returns the default value of 0, which would
+        # incorrectly label every un-tagged trip (including eastbound ones)
+        # as direction 0.  We only write direction_id into the dict when it
+        # is explicitly present in the feed so that get_rt_route_trip_statuses
+        # can detect the omission and fall back to the static GTFS DB lookup.
+        trip_dict = {
+            "trip_id": entity.trip_update.trip.trip_id,
+            "start_time": entity.trip_update.trip.start_time,
+            "start_date": entity.trip_update.trip.start_date,
+            "route_id": entity.trip_update.trip.route_id,
+        }
+        try:
+            if entity.trip_update.trip.HasField("direction_id"):
+                trip_dict["direction_id"] = str(entity.trip_update.trip.direction_id)
+                _LOGGER.debug("Trip %s has explicit direction_id: %s", entity.trip_update.trip.trip_id, trip_dict["direction_id"])
+            else:
+                _LOGGER.debug("Trip %s has no direction_id in RT feed — static GTFS lookup will be used", entity.trip_update.trip.trip_id)
+        except ValueError:
+            # HasField not supported for this field in this protobuf build;
+            # fall back to always including it (original behaviour).
+            trip_dict["direction_id"] = str(entity.trip_update.trip.direction_id)
+            _LOGGER.debug("HasField not supported for direction_id on trip %s, using raw value: %s", entity.trip_update.trip.trip_id, trip_dict["direction_id"])
+
         entity_dict = {
             "id": entity.id,
             "trip_update": {
-                "trip": {
-                    "trip_id": entity.trip_update.trip.trip_id,
-                    "start_time": entity.trip_update.trip.start_time,
-                    "start_date": entity.trip_update.trip.start_date,
-                    "route_id": entity.trip_update.trip.route_id,
-                    "direction_id": str(entity.trip_update.trip.direction_id)
-                },
+                "trip": trip_dict,
                 "stop_time_update": []
             }
         }
