@@ -64,6 +64,11 @@ def due_in_minutes(timestamp):
     return int(diff.total_seconds() / 60)
 
 def get_gtfs_feed_entities(url: str, headers, label: str):
+    # Guard: if no URL configured for this feed type, skip silently
+    if not url:
+        _LOGGER.debug("GTFS RT get_feed_entities: no url configured for label: %s, skipping", label)
+        return None
+
     _LOGGER.debug(f"GTFS RT get_feed_entities for url: {url} , headers: {headers}, label: {label}")
     feed = gtfs_realtime_pb2.FeedMessage()  # type: ignore
 
@@ -100,14 +105,13 @@ def get_gtfs_feed_entities(url: str, headers, label: str):
 
 def get_direction_from_static_gtfs(self, trip_id: str) -> str:
     """Resolve direction_id from static GTFS DB when RT feed omits it.
-    
+
     Tries several common attribute paths used by the gtfs2 integration to
     locate the SQLite database file, so the lookup is resilient to different
     sensor configurations.
     """
     try:
         import sqlite3
-        # Try common attribute paths for the db file name
         db_file = None
         for attr in ("_data", ):
             data = getattr(self, attr, None)
@@ -116,7 +120,6 @@ def get_direction_from_static_gtfs(self, trip_id: str) -> str:
                 if db_file:
                     break
         if not db_file:
-            # Last resort: try direct attributes
             db_file = getattr(self, "_gtfs_file", None) or getattr(self, "_db_file", None)
 
         if not db_file:
@@ -217,6 +220,12 @@ def get_rt_route_trip_statuses(self):
     # in this case the trip still covers the direction
 
     departure_times = {}
+
+    # Guard: if no trip update URL is configured (e.g. alerts-only feeds like
+    # TTC subway), skip trip fetching entirely and return empty departures.
+    if not self._trip_update_url:
+        _LOGGER.debug("No trip_update_url configured — skipping RT trip fetch")
+        return departure_times
     
     if self._vehicle_position_url:   
         vehicle_positions = get_rt_vehicle_positions(self)
@@ -282,8 +291,7 @@ def get_rt_route_trip_statuses(self):
             # Determine whether this entity matches what we're looking for.
             # When direction_id is still "nn" after the static GTFS lookup (i.e.
             # lookup failed), treat a route_id match as sufficient for route-based
-            # sensors so that departures are not silently dropped. The direction
-            # will be set to self._direction when the stop is recorded below.
+            # sensors so that departures are not silently dropped.
             direction_resolved = direction_id != "nn"
             route_match = (route_id == self._route_id or self._route_id in route_id)
             direction_match = (str(direction_id) == str(self._direction))
@@ -412,57 +420,70 @@ def get_rt_alerts(self):
         headers=self._headers,
         label="alerts",
     )
-    
+
     if not feed_entities:
         return rt_alerts
 
     for entity in feed_entities:
         if entity.HasField("alert"):
-            # Extract header text safely
-            description_text = ""
-            if entity.alert.description_text.translation:
-                description_text = entity.alert.description_text.translation[0].text
-            
             for x in entity.alert.informed_entity:
-                route_match = (x.route_id == self._route_id)
-                stop_match = (x.stop_id == self._stop_id)
-                dest_stop_match = (x.stop_id == self._destination_id)
-                
-                # If it's our route, we want the alert regardless of stop ID
-                if route_match:
-                    if stop_match or not x.stop_id:
-                        rt_alerts["origin_stop_alert"] = description_text.replace('\n', ' ')
-                    if dest_stop_match or not x.stop_id:
-                        rt_alerts["destination_stop_alert"] = description_text.replace('\n', ' ')
-    
+                if x.HasField("stop_id"):
+                    stop_id = x.stop_id 
+                else:
+                    stop_id = "unknown"
+                if x.HasField("stop_id"):
+                    route_id = x.route_id  
+                else:
+                    route_id = "unknown"
+            if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id): 
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.description_text)
+                rt_alerts["origin_stop_alert"] = (str(entity.alert.description_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+            if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id): 
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.description_text)
+                rt_alerts["destination_stop_alert"] = (str(entity.alert.description_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+            if stop_id == "unknown" and route_id == self._route_id: 
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.description_text)
+                rt_alerts["origin_stop_alert"] = (str(entity.alert.description_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+                rt_alerts["destination_stop_alert"] = (str(entity.alert.description_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
+                        
     return rt_alerts
     
 def get_rt_alerts_json(self):
     rt_alerts = {}
-    if (self._alerts_url)[:4] == "http":
-        feed_entities = get_gtfs_feed_entities(
-            url=self._alerts_url,
-            headers=self._headers,
-            label="alerts",
-        )
-        if not feed_entities:
-            return rt_alerts
+    if not self._alerts_url or not self._alerts_url.startswith("http"):
+        return rt_alerts
 
-        for entity in feed_entities:
-            alert = entity.get("alert")
-            if alert:
-                description_text = alert.get("description_text", {}).get("translation", [{}])[0].get("text", "Alert")
-                
-                for x in alert.get("informed_entity", []):
-                    route_id = x.get("route_id", "unknown")
-                    stop_id = x.get("stop_id", "unknown")
+    feed_entities = get_gtfs_feed_entities(
+        url=self._alerts_url,
+        headers=self._headers,
+        label="alerts",
+    )
 
-                    if route_id == self._route_id or route_id == "unknown":
-                        if stop_id == self._stop_id or stop_id == "unknown":
-                            rt_alerts["origin_stop_alert"] = description_text.replace('\n', ' ')
-                        if stop_id == self._destination_id or stop_id == "unknown":
-                            rt_alerts["destination_stop_alert"] = description_text.replace('\n', ' ')
-                            
+    if not feed_entities:
+        return rt_alerts
+
+    for entity in feed_entities:
+        if entity["alert"]:
+            for x in entity["alert"]["informed_entity"]:
+                if x["stop_id"]:
+                    stop_id = x["stop_id"] 
+                else:
+                    stop_id = "unknown"
+                if x["route_id"]:
+                    route_id = x["route_id"]  
+                else:
+                    route_id = "unknown"
+            if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id): 
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["description_text"])
+                rt_alerts["origin_stop_alert"] = (str(entity["alert"]["description_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+            if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id): 
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["description_text"])
+                rt_alerts["destination_stop_alert"] = (str(entity["alert"]["description_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+            if stop_id == "unknown" and route_id == self._route_id: 
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["description_text"])
+                rt_alerts["origin_stop_alert"] = (str(entity["alert"]["description_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+                rt_alerts["destination_stop_alert"] = (str(entity["alert"]["description_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
+                        
     return rt_alerts
     
     
