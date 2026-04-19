@@ -1,4 +1,4 @@
-get_gtfs_feed_entitiesimport logging
+import logging
 from datetime import datetime, timedelta
 import json
 import os
