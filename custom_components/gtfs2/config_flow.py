@@ -582,7 +582,9 @@ class GTFSOptionsFlowHandler(config_entries.OptionsFlow):
                 step_id="real_time",
                 data_schema=vol.Schema(
                     {
-                        vol.Required(CONF_TRIP_UPDATE_URL, default=self.config_entry.options.get(CONF_TRIP_UPDATE_URL)): str,
+                        # Trip update URL is optional — feeds like TTC subway
+                        # provide alerts only and have no trip update endpoint.
+                        vol.Optional(CONF_TRIP_UPDATE_URL, default=self.config_entry.options.get(CONF_TRIP_UPDATE_URL, "")): str,
                         vol.Optional(CONF_API_KEY, default=self.config_entry.options.get(CONF_API_KEY, '')) : cv.string,
                         vol.Optional(CONF_API_KEY_NAME, default=self.config_entry.options.get(CONF_API_KEY_NAME,DEFAULT_API_KEY_NAME)) : cv.string,
                         vol.Required(CONF_API_KEY_LOCATION, default=self.config_entry.options.get(CONF_API_KEY_LOCATION,DEFAULT_API_KEY_LOCATION)) : selector.SelectSelector(selector.SelectSelectorConfig(options=ATTR_API_KEY_LOCATIONS, translation_key="api_key_location")),
@@ -597,7 +599,9 @@ class GTFSOptionsFlowHandler(config_entries.OptionsFlow):
                 step_id="real_time",
                 data_schema=vol.Schema(
                     {
-                        vol.Required(CONF_TRIP_UPDATE_URL, default=self.config_entry.options.get(CONF_TRIP_UPDATE_URL)): str,
+                        # Trip update URL is optional — feeds like TTC subway
+                        # provide alerts only and have no trip update endpoint.
+                        vol.Optional(CONF_TRIP_UPDATE_URL, default=self.config_entry.options.get(CONF_TRIP_UPDATE_URL, "")): str,
                         vol.Optional(CONF_VEHICLE_POSITION_URL, default=self.config_entry.options.get(CONF_VEHICLE_POSITION_URL,"")): str,
                         vol.Optional(CONF_ALERTS_URL, default=self.config_entry.options.get(CONF_ALERTS_URL,"")): cv.string,
                         vol.Optional(CONF_API_KEY, default=self.config_entry.options.get(CONF_API_KEY, '')) : cv.string,
@@ -627,4 +631,4 @@ async def _check_stop_list(self, data):
     if count_stops > DEFAULT_MAX_LOCAL_STOPS:
         _LOGGER.debug("Checkstops limit reached with: %s", count_stops)
         return "stop_limit_reached"
-    return None         
+    return None
