@@ -1,4 +1,4 @@
-import logging
+get_gtfs_feed_entitiesimport logging
 from datetime import datetime, timedelta
 import json
 import os
@@ -72,12 +72,21 @@ def get_gtfs_feed_entities(url: str, headers, label: str):
     _LOGGER.debug(f"GTFS RT get_feed_entities for url: {url} , headers: {headers}, label: {label}")
     feed = gtfs_realtime_pb2.FeedMessage()  # type: ignore
 
+    # Ensure a User-Agent is always present. Some transit agency gateways
+    # (e.g. Azure Application Gateway used by TTC) return 403 when no
+    # User-Agent header is supplied, treating the request as a scraper.
+    _default_headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; GTFS2-HomeAssistant/1.0)"
+    }
+    if headers:
+        _default_headers.update(headers)
+
     if url.startswith('file'):
         requests_session = requests.session()
         requests_session.mount('file://', LocalFileAdapter())
         response = requests_session.get(url)   
     else:
-        response = requests.get(url, headers=headers, timeout=20)
+        response = requests.get(url, headers=_default_headers, timeout=20)
 
     if response.status_code == 200 and "Bad Gateway" not in response.text and "Not Found" not in response.text :
         _LOGGER.debug("Successfully updated %s", label)
@@ -436,15 +445,15 @@ def get_rt_alerts(self):
                 else:
                     route_id = "unknown"
             if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id): 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.description_text)
-                rt_alerts["origin_stop_alert"] = (str(entity.alert.description_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.header_text)
+                rt_alerts["origin_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
             if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id): 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.description_text)
-                rt_alerts["destination_stop_alert"] = (str(entity.alert.description_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.header_text)
+                rt_alerts["destination_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
             if stop_id == "unknown" and route_id == self._route_id: 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.description_text)
-                rt_alerts["origin_stop_alert"] = (str(entity.alert.description_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                rt_alerts["destination_stop_alert"] = (str(entity.alert.description_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.header_text)
+                rt_alerts["origin_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+                rt_alerts["destination_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
                         
     return rt_alerts
     
@@ -474,15 +483,15 @@ def get_rt_alerts_json(self):
                 else:
                     route_id = "unknown"
             if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id): 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["description_text"])
-                rt_alerts["origin_stop_alert"] = (str(entity["alert"]["description_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["header_text"])
+                rt_alerts["origin_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
             if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id): 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["description_text"])
-                rt_alerts["destination_stop_alert"] = (str(entity["alert"]["description_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["header_text"])
+                rt_alerts["destination_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
             if stop_id == "unknown" and route_id == self._route_id: 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["description_text"])
-                rt_alerts["origin_stop_alert"] = (str(entity["alert"]["description_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                rt_alerts["destination_stop_alert"] = (str(entity["alert"]["description_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
+                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["header_text"])
+                rt_alerts["origin_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
+                rt_alerts["destination_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
                         
     return rt_alerts
     
