@@ -435,26 +435,51 @@ def get_rt_alerts(self):
 
     for entity in feed_entities:
         if entity.HasField("alert"):
+            # Extract alert text cleanly rather than string-splitting the proto repr
+            alert_text = ""
+            try:
+                # Use description_text for the full message; fall back to
+                # header_text if description is absent (e.g. some feeds omit it)
+                desc = entity.alert.description_text.translation
+                alert_text = desc[0].text if desc else ""
+            except (IndexError, AttributeError):
+                pass
+            if not alert_text:
+                try:
+                    alert_text = entity.alert.header_text.translation[0].text
+                except (IndexError, AttributeError):
+                    pass
+
+            # Evaluate each informed_entity independently so alerts covering
+            # multiple routes/stops are not filtered down to just the last one.
+            # Bug fix: the original code checked HasField("stop_id") for both
+            # stop_id AND route_id (copy-paste error), causing route_id to always
+            # resolve to "unknown" when stop_id was absent (e.g. route-only alerts
+            # like TTC subway detours), and then never matching self._route_id.
             for x in entity.alert.informed_entity:
-                if x.HasField("stop_id"):
-                    stop_id = x.stop_id 
-                else:
-                    stop_id = "unknown"
-                if x.HasField("stop_id"):
-                    route_id = x.route_id  
-                else:
-                    route_id = "unknown"
-            if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id): 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.header_text)
-                rt_alerts["origin_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-            if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id): 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.header_text)
-                rt_alerts["destination_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-            if stop_id == "unknown" and route_id == self._route_id: 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity.alert.header_text)
-                rt_alerts["origin_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                rt_alerts["destination_stop_alert"] = (str(entity.alert.header_text).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
-                        
+                try:
+                    stop_id = x.stop_id if x.HasField("stop_id") else "unknown"
+                except ValueError:
+                    stop_id = x.stop_id or "unknown"
+                try:
+                    route_id = x.route_id if x.HasField("route_id") else "unknown"
+                except ValueError:
+                    route_id = x.route_id or "unknown"
+
+                _LOGGER.debug("RT Alert check — route: %s, stop: %s, self_route: %s, self_stop: %s, self_dest: %s",
+                    route_id, stop_id, self._route_id, self._stop_id, self._destination_id)
+
+                if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id):
+                    _LOGGER.debug("RT Alert matched origin stop for route: %s, stop: %s", route_id, stop_id)
+                    rt_alerts["origin_stop_alert"] = alert_text
+                if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id):
+                    _LOGGER.debug("RT Alert matched destination stop for route: %s, stop: %s", route_id, stop_id)
+                    rt_alerts["destination_stop_alert"] = alert_text
+                if stop_id == "unknown" and route_id == self._route_id:
+                    _LOGGER.debug("RT Alert matched route (no stop filter) for route: %s", route_id)
+                    rt_alerts["origin_stop_alert"] = alert_text
+                    rt_alerts["destination_stop_alert"] = alert_text
+
     return rt_alerts
     
 def get_rt_alerts_json(self):
@@ -472,27 +497,35 @@ def get_rt_alerts_json(self):
         return rt_alerts
 
     for entity in feed_entities:
-        if entity["alert"]:
-            for x in entity["alert"]["informed_entity"]:
-                if x["stop_id"]:
-                    stop_id = x["stop_id"] 
-                else:
-                    stop_id = "unknown"
-                if x["route_id"]:
-                    route_id = x["route_id"]  
-                else:
-                    route_id = "unknown"
-            if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id): 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["header_text"])
-                rt_alerts["origin_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-            if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id): 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["header_text"])
-                rt_alerts["destination_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-            if stop_id == "unknown" and route_id == self._route_id: 
-                _LOGGER.debug("RT Alert for route: %s, stop: %s, alert: %s", route_id, stop_id, entity["alert"]["header_text"])
-                rt_alerts["origin_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')
-                rt_alerts["destination_stop_alert"] = (str(entity["alert"]["header_text"]).split('text: "')[1]).split('"',1)[0].replace(':','').replace('\n','')    
-                        
+        alert = entity.get("alert")
+        if alert:
+            # Use description_text for the full message; fall back to header_text
+            _translations = alert.get("description_text", {}).get("translation", [])
+            alert_text = _translations[0].get("text", "") if _translations else ""
+            if not alert_text:
+                _translations = alert.get("header_text", {}).get("translation", [])
+                alert_text = _translations[0].get("text", "") if _translations else ""
+
+            # Evaluate each informed_entity independently — same bug fix as
+            # get_rt_alerts: loop over all entities and match inside the loop.
+            for x in alert.get("informed_entity", []):
+                stop_id = x.get("stop_id") or "unknown"
+                route_id = x.get("route_id") or "unknown"
+
+                _LOGGER.debug("RT Alert JSON check — route: %s, stop: %s, self_route: %s, self_stop: %s, self_dest: %s",
+                    route_id, stop_id, self._route_id, self._stop_id, self._destination_id)
+
+                if stop_id == self._stop_id and (route_id == "unknown" or route_id == self._route_id):
+                    _LOGGER.debug("RT Alert JSON matched origin stop for route: %s, stop: %s", route_id, stop_id)
+                    rt_alerts["origin_stop_alert"] = alert_text
+                if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id):
+                    _LOGGER.debug("RT Alert JSON matched destination stop for route: %s, stop: %s", route_id, stop_id)
+                    rt_alerts["destination_stop_alert"] = alert_text
+                if stop_id == "unknown" and route_id == self._route_id:
+                    _LOGGER.debug("RT Alert JSON matched route (no stop filter) for route: %s", route_id)
+                    rt_alerts["origin_stop_alert"] = alert_text
+                    rt_alerts["destination_stop_alert"] = alert_text
+
     return rt_alerts
     
     
