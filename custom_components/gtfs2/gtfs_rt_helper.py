@@ -475,7 +475,7 @@ def get_rt_alerts(self):
                 if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id):
                     _LOGGER.debug("RT Alert matched destination stop for route: %s, stop: %s", route_id, stop_id)
                     rt_alerts["destination_stop_alert"] = alert_text
-                if stop_id == "unknown" and route_id == self._route_id:
+                if route_id == self._route_id:
                     _LOGGER.debug("RT Alert matched route (no stop filter) for route: %s", route_id)
                     rt_alerts["origin_stop_alert"] = alert_text
                     rt_alerts["destination_stop_alert"] = alert_text
@@ -521,7 +521,7 @@ def get_rt_alerts_json(self):
                 if stop_id == self._destination_id and (route_id == "unknown" or route_id == self._route_id):
                     _LOGGER.debug("RT Alert JSON matched destination stop for route: %s, stop: %s", route_id, stop_id)
                     rt_alerts["destination_stop_alert"] = alert_text
-                if stop_id == "unknown" and route_id == self._route_id:
+                if route_id == self._route_id:
                     _LOGGER.debug("RT Alert JSON matched route (no stop filter) for route: %s", route_id)
                     rt_alerts["origin_stop_alert"] = alert_text
                     rt_alerts["destination_stop_alert"] = alert_text
