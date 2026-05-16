@@ -266,7 +266,8 @@ def get_rt_route_trip_statuses(self):
                 route_id = entity["trip_update"]["trip"]["route_id"]
 
             trip_id = entity["trip_update"]["trip"]["trip_id"]
-
+            if route_id != str(self._route_id) and trip_id != str(self._trip_id):
+                continue  # skip direction lookup for routes we don't care about
             if "direction_id" in entity["trip_update"]["trip"]:
                 # direction_id was explicitly present in the (converted) feed dict
                 direction_id = entity["trip_update"]["trip"]["direction_id"]
@@ -429,18 +430,6 @@ def get_rt_alerts(self):
         headers=self._headers,
         label="alerts",
     )
-    if not feed_entities:
-        return rt_alerts
-
-    for entity in feed_entities:
-        if entity.HasField("alert"):
-            # Extract alert text cleanly rather than string-splitting the proto repr
-            alert_text = ""
-            try:
-                # Use description_text for the full message; fall back to
-                # header_text if description is absent (e.g. some feeds omit it)
-                desc =
-
     if not feed_entities:
         return rt_alerts
 
