@@ -207,7 +207,7 @@ def get_next_departure(hass, _data):
 		AND origin_stop_sequence < dest_stop_sequence
         AND today_cd = 1
 		{tomorrow_calendar_date_where}
-        ORDER BY calendar_date,origin_depart_date, today_cd, origin_depart_time
+        ORDER BY calendar_date,origin_depart_date, today_cd, origin_depart_time LIMIT 20
         """  # noqa: S608
     # Create lookup timetable for today and possibly tomorrow, taking into
     # account any departures from yesterday scheduled after midnight,
@@ -311,55 +311,38 @@ def get_next_departure(hass, _data):
 
     # create upcoming timetable, use timezone before resetting to UTC and reset 'item' to match with timezone
     timetable_remaining = []
+    timetable_remaining_line = []
+    timetable_remaining_headsign = []
+    timetable_upcoming_trips = []
     ix = 0
-    item={}
-    for key in sorted(timetable.keys()):
+    item = {}
+    for key, value in sorted(timetable.items()):
         upcoming = datetime.datetime.strptime(key, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone)
-        _LOGGER.debug ("Upcoming_departure_in_defined_timezone: %s, Now_in_defined_timezone_plus_offset: %s, key: %s, ix: %s", upcoming, now_local_tz, key, ix)
+        _LOGGER.debug("Upcoming_departure_in_defined_timezone: %s, Now_in_defined_timezone_plus_offset: %s, key: %s, ix: %s", upcoming, now_local_tz, key, ix)
         if upcoming > now_local_tz:
-            if ix == 0 :
+            if ix == 0:
                 _LOGGER.debug("Resetting item")
                 item = timetable[key]
-                ix = ix + 1
+                ix += 1
             _LOGGER.debug("Adding departure: %s", upcoming)
-            timetable_remaining.append(dt_util.as_utc(upcoming).isoformat())   
+            utc_iso = dt_util.as_utc(upcoming).isoformat()
+            timetable_remaining.append(utc_iso)
+            timetable_remaining_line.append(
+                utc_iso + " (" + str(value["route_short_name"]) + str(("/" + value["route_long_name"]) if value["route_long_name"] else "") + ")"
+            )
+            timetable_remaining_headsign.append(
+                utc_iso + " (" + str(value["trip_headsign"]) + ")"
+            )
+            timetable_upcoming_trips.append(str(value["trip_id"]))
     _LOGGER.debug("Timetable Remaining Departures on this Start/Stop: %s", timetable_remaining)
+    _LOGGER.debug("Timetable Remaining Departures on this Start/Stop, per line: %s", timetable_remaining_line)
+    _LOGGER.debug("Timetable Remaining Departures on this Start/Stop, with headsign: %s", timetable_remaining_headsign)
     if item == {}:
-        data_returned = {        
+        data_returned = {
         "gtfs_updated_at": dt_util.utcnow().isoformat(),
         }
         _LOGGER.info("No items found in gtfs")
         return {}
-    
-    # create upcoming timetable with line info and headsign
-    timetable_remaining_line = []
-    timetable_remaining_headsign = []
-    for key, value in sorted(timetable.items()):
-        upcoming = datetime.datetime.strptime(key, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone)
-        if upcoming > now_local_tz:
-            timetable_remaining_line.append(
-                str(dt_util.as_utc(upcoming).isoformat()) + " (" + str(value["route_short_name"]) +  str( ("/" + value["route_long_name"])  if value["route_long_name"] else "") + ")"
-            )
-            timetable_remaining_headsign.append(
-                str(dt_util.as_utc(upcoming).isoformat()) + " (" + str(value["trip_headsign"]) + ")"
-            )
-    _LOGGER.debug(
-        "Timetable Remaining Departures on this Start/Stop, per line: %s",
-        timetable_remaining_line,
-    )
-    _LOGGER.debug(
-        "Timetable Remaining Departures on this Start/Stop, with headsign: %s",
-        timetable_remaining_headsign,
-    )
-
-    # create upcoming trips
-    timetable_upcoming_trips = []
-    for key, value in sorted(timetable.items()):
-        upcoming = datetime.datetime.strptime(key, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone)
-        if upcoming > now_local_tz:
-            timetable_upcoming_trips.append(
-                str(value["trip_id"])
-            )
 
     # Format arrival and departure dates and times, accounting for the
     # possibility of times crossing over midnight.

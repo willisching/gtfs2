@@ -45,7 +45,7 @@ class GTFSUpdateCoordinator(DataUpdateCoordinator):
             hass=hass,
             logger=_LOGGER,
             name=entry.entry_id,
-            update_interval=timedelta(minutes=1),
+            update_interval=timedelta(minutes=entry.options.get("refresh_interval", DEFAULT_REFRESH_INTERVAL)),
         )
         self.config_entry = entry
         self.hass = hass
