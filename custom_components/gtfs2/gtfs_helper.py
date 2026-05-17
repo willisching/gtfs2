@@ -152,6 +152,7 @@ def get_next_departure(hass, _data):
         AND origin_stop_sequence < dest_stop_sequence
         AND calendar.start_date <= date('now')
         AND calendar.end_date >= date('now')
+        AND time(origin_stop_time.departure_time) >= time(:now_time, '-30 minutes')
 		UNION ALL
 	    SELECT trip.trip_id, trip.route_id,trip.trip_headsign, trip.direction_id,trip.trip_short_name,
                route.route_long_name,route.route_short_name,
@@ -207,7 +208,8 @@ def get_next_departure(hass, _data):
 		AND origin_stop_sequence < dest_stop_sequence
         AND today_cd = 1
 		{tomorrow_calendar_date_where}
-        ORDER BY calendar_date,origin_depart_date, today_cd, origin_depart_time LIMIT 20
+        AND time(origin_stop_time.departure_time) >= time(:now_time, '-30 minutes')
+        ORDER BY calendar_date,origin_depart_date, today_cd, origin_depart_time LIMIT 50
         """  # noqa: S608
     # Create lookup timetable for today and possibly tomorrow, taking into
     # account any departures from yesterday scheduled after midnight,
@@ -223,6 +225,7 @@ def get_next_departure(hass, _data):
                 "end_station_id": end_station_id,
                 "limit": limit,
                 "route_type": route_type,
+                "now_time": now_time,
             },
         )
         rows = result.fetchall()
