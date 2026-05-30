@@ -152,7 +152,6 @@ def get_next_departure(hass, _data):
         AND origin_stop_sequence < dest_stop_sequence
         AND calendar.start_date <= date('now')
         AND calendar.end_date >= date('now')
-        AND time(origin_stop_time.departure_time) >= time(:now_time, '-30 minutes')
 		UNION ALL
 	    SELECT trip.trip_id, trip.route_id,trip.trip_headsign, trip.direction_id,trip.trip_short_name,
                route.route_long_name,route.route_short_name,
@@ -208,8 +207,7 @@ def get_next_departure(hass, _data):
 		AND origin_stop_sequence < dest_stop_sequence
         AND today_cd = 1
 		{tomorrow_calendar_date_where}
-        AND time(origin_stop_time.departure_time) >= time(:now_time, '-30 minutes')
-        ORDER BY calendar_date,origin_depart_date, today_cd, origin_depart_time LIMIT 50
+        ORDER BY calendar_date,origin_depart_date, today_cd, origin_depart_time
         """  # noqa: S608
     # Create lookup timetable for today and possibly tomorrow, taking into
     # account any departures from yesterday scheduled after midnight,
@@ -249,6 +247,15 @@ def get_next_departure(hass, _data):
                 idx_prefix = now_date_local_tz
             else:
                 idx_prefix = tomorrow_date_local_tz
+            # For feeds that store all dates as 1970-01-01, departure times later in
+            # the day than the current time but far enough back to have already run
+            # should roll over to tomorrow's date prefix.
+            if row["origin_depart_date"] == '1970-01-01' and row["today"] == 1:
+                depart_dt = datetime.datetime.strptime(
+                    f"{now_date_local_tz} {row['origin_depart_time']}", "%Y-%m-%d %H:%M:%S"
+                )
+                if depart_dt < now - datetime.timedelta(minutes=offset + 60):
+                    idx_prefix = tomorrow_date_local_tz
             idx = f"{idx_prefix} {row['origin_depart_time']}"
             timetable[idx] = {**row, **extras}
             today_last = idx      
